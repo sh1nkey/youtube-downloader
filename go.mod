@@ -1,4 +1,4 @@
-module github.com/kkdai/youtube/v2
+module github.com/sh1nkey/youtube-downloader/v2
 
 go 1.23.0
 
@@ -27,6 +27,7 @@ require (
 	github.com/google/pprof v0.0.0-20250208200701-d0013a598941 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/kkdai/youtube/v2 v2.10.4
 	github.com/magiconair/properties v1.8.9 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
