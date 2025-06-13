@@ -1,4 +1,4 @@
-module github.com/sh1nkey/youtube-downloader/v2
+module github.com/sh1nkey/youtube-downloader/v1
 
 go 1.23.0
 
