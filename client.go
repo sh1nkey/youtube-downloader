@@ -358,50 +358,54 @@ func (c *Client) VideoFromPlaylistEntryContext(ctx context.Context, entry *Playl
 }
 
 // GetStream returns the stream and the total size for a specific format
-func (c *Client) GetStream(video *Video, format *Format) (io.ReadCloser, int64, error) {
-	return c.GetStreamContext(context.Background(), video, format)
+func (c *Client) GetStream(video *Video, format *Format, senderChan chan<- audioData) (int64, error) {
+	return c.GetStreamContext(context.Background(), video, format, senderChan)
 }
 
 // GetStreamContext returns the stream and the total size for a specific format with a context.
-func (c *Client) GetStreamContext(ctx context.Context, video *Video, format *Format) (io.ReadCloser, int64, error) {
+func (c *Client) GetStreamContext(ctx context.Context, video *Video, format *Format, senderChan chan<- audioData) (int64, error) {
 	url, err := c.GetStreamURL(video, format)
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 
-	r, w := io.Pipe()
+
 	contentLength := format.ContentLength
 
 	if contentLength == 0 {
 		// some videos don't have length information
-		contentLength = c.downloadOnce(req, w, format)
+		contentLength = c.downloadOnce(req,  senderChan)
 	} else {
 		// we have length information, let's download by chunks!
-		c.downloadChunked(ctx, req, w, format)
+		c.downloadChunked(ctx, req, format, senderChan)
 	}
 
-	return r, contentLength, nil
+	return contentLength, nil
 }
 
-func (c *Client) downloadOnce(req *http.Request, w *io.PipeWriter, _ *Format) int64 {
+func (c *Client) downloadOnce(req *http.Request,  senderChan chan<- audioData) int64 {
 	resp, err := c.httpDo(req)
 	if err != nil {
-		w.CloseWithError(err) //nolint:errcheck
+
 		return 0
 	}
 
 	go func() {
 		defer resp.Body.Close()
-		_, err := io.Copy(w, resp.Body)
-		if err == nil {
-			w.Close()
-		} else {
-			w.CloseWithError(err) //nolint:errcheck
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			slog.Error("Failed to read response body", "error", err)
+			return
+		}
+		senderChan <- audioData{
+			data:        data,
+			chunkNum:   1,
+			totalChunks: 1,
 		}
 	}()
 
@@ -433,15 +437,16 @@ func (c *Client) getMaxRoutines(limit int) int {
 	return routines
 }
 
-func (c *Client) downloadChunked(ctx context.Context, req *http.Request, w *io.PipeWriter, format *Format) {
+func (c *Client) downloadChunked(ctx context.Context, req *http.Request, format *Format, senderChan chan<- audioData) {
 	chunks := getChunks(format.ContentLength, c.getChunkSize())
 	maxRoutines := c.getMaxRoutines(len(chunks))
 
 	cancelCtx, cancel := context.WithCancel(ctx)
 	abort := func(err error) {
-		w.CloseWithError(err)
 		cancel()
 	}
+
+	totalChunks := len(chunks)
 
 	currentChunk := atomic.Uint32{}
 	for i := 0; i < maxRoutines; i++ {
@@ -454,7 +459,7 @@ func (c *Client) downloadChunked(ctx context.Context, req *http.Request, w *io.P
 				}
 
 				chunk := &chunks[chunkIndex]
-				err := c.downloadChunk(req.Clone(cancelCtx), chunk)
+				err := c.downloadChunk(req.Clone(cancelCtx), chunk, uint64(totalChunks))
 				close(chunk.data)
 
 				if err != nil {
@@ -473,15 +478,11 @@ func (c *Client) downloadChunked(ctx context.Context, req *http.Request, w *io.P
 				abort(context.Canceled)
 				return
 			case data := <-chunks[i].data:
-				_, err := io.Copy(w, bytes.NewBuffer(data))
-				if err != nil {
-					abort(err)
-				}
+				senderChan <- data
 			}
 		}
 
 		// everything succeeded
-		w.Close()
 	}()
 }
 
@@ -694,7 +695,7 @@ func (c *Client) httpPostBodyBytes(ctx context.Context, url string, body interfa
 // downloadChunk writes the response data into the data channel of the chunk.
 // Downloading in multiple chunks is much faster:
 // https://github.com/kkdai/youtube/pull/190
-func (c *Client) downloadChunk(req *http.Request, chunk *chunk) error {
+func (c *Client) downloadChunk(req *http.Request, chunk *chunk, totalChunks uint64) error {
 	q := req.URL.Query()
 	q.Set("range", fmt.Sprintf("%d-%d", chunk.start, chunk.end))
 	req.URL.RawQuery = q.Encode()
@@ -721,7 +722,11 @@ func (c *Client) downloadChunk(req *http.Request, chunk *chunk) error {
 		return fmt.Errorf("chunk at offset %d has invalid size: expected=%d actual=%d", chunk.start, expected, n)
 	}
 
-	chunk.data <- data
+	chunk.data <- audioData{
+		data:        data,
+		chunkNum:   chunk.num,
+		totalChunks: totalChunks,
+	}
 
 	return nil
 }

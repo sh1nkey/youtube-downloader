@@ -5,23 +5,31 @@ import (
 
 	sjson "github.com/bitly/go-simplejson"
 )
-
+type audioData struct {
+	data []byte
+	chunkNum uint64
+	totalChunks uint64
+}
 type chunk struct {
+	num uint64
+
 	start int64
 	end   int64
-	data  chan []byte
+	data  chan audioData
 }
 
 func getChunks(totalSize, chunkSize int64) []chunk {
 	var chunks []chunk
+
+	var counter uint64
 
 	for start := int64(0); start < totalSize; start += chunkSize {
 		end := chunkSize + start - 1
 		if end > totalSize-1 {
 			end = totalSize - 1
 		}
-
-		chunks = append(chunks, chunk{start, end, make(chan []byte, 1)})
+		counter++
+		chunks = append(chunks, chunk{counter, start, end, make(chan audioData, 1)})
 	}
 
 	return chunks
